@@ -3,6 +3,9 @@ import { db } from "@/lib/db";
 import { getResend } from "@/lib/resend";
 import { getEmailTemplate, TOTAL_EMAILS } from "@/lib/drip-templates";
 
+// Vercel Pro: allow up to 300s for sending all cohorts
+export const maxDuration = 300;
+
 const FROM = "Asad from Huddle Duck <asad@huddleduck.co.uk>";
 const UNSUB_MAILTO =
   "mailto:asad@huddleduck.co.uk?subject=Unsubscribe&body=Please%20remove%20me%20from%20future%20emails";
@@ -12,6 +15,9 @@ const UNSUB_MAILTO =
 // Emails 5-10: every other day (44h minimum)
 const MIN_HOURS_DAILY = 20;
 const MIN_HOURS_ALTERNATE = 44;
+
+// Resend batch limit per call
+const BATCH_SIZE = 100;
 
 export async function GET(req: Request) {
   // Verify cron secret
@@ -30,7 +36,9 @@ export async function GET(req: Request) {
   }> = [];
 
   // Get all cohorts from state
-  const stateRows = await db.execute("SELECT cohort, last_email_sent, last_sent_at FROM drip_state ORDER BY cohort");
+  const stateRows = await db.execute(
+    "SELECT cohort, last_email_sent, last_sent_at FROM drip_state ORDER BY cohort"
+  );
 
   for (const row of stateRows.rows) {
     const cohort = row.cohort as string;
@@ -78,48 +86,61 @@ export async function GET(req: Request) {
     }
 
     const template = getEmailTemplate(nextEmail);
-    console.log(`[drip] Cohort ${cohort}: Sending Email ${nextEmail} "${template.subject}" to ${contacts.length} contacts`);
+    console.log(
+      `[drip] Cohort ${cohort}: Sending Email ${nextEmail} "${template.subject}" to ${contacts.length} contacts`
+    );
 
     let sent = 0;
     let failed = 0;
 
-    for (const email of contacts) {
+    // Send in batches of BATCH_SIZE using Resend batch API
+    for (let i = 0; i < contacts.length; i += BATCH_SIZE) {
+      const batch = contacts.slice(i, i + BATCH_SIZE);
+      const emailPayloads = batch.map((email) => ({
+        from: FROM,
+        to: email,
+        subject: template.subject,
+        html: template.html,
+        headers: { "List-Unsubscribe": `<${UNSUB_MAILTO}>` },
+      }));
+
       try {
-        const { error } = await resend.emails.send({
-          from: FROM,
-          to: email,
-          subject: template.subject,
-          html: template.html,
-          headers: {
-            "List-Unsubscribe": `<${UNSUB_MAILTO}>`,
-          },
-        });
+        const { data, error } = await resend.batch.send(emailPayloads);
 
         if (error) {
-          console.log(`[drip]   FAIL ${email}: ${error.message}`);
-          await db.execute({
-            sql: "INSERT INTO drip_sends (cohort, email_num, recipient, status, error) VALUES (?, ?, ?, 'failed', ?)",
-            args: [cohort, nextEmail, email, error.message],
-          });
-          failed++;
+          console.log(`[drip]   Batch FAIL (${batch.length} emails): ${error.message}`);
+          for (const email of batch) {
+            await db.execute({
+              sql: "INSERT INTO drip_sends (cohort, email_num, recipient, status, error) VALUES (?, ?, ?, 'failed', ?)",
+              args: [cohort, nextEmail, email, error.message],
+            });
+          }
+          failed += batch.length;
         } else {
-          await db.execute({
-            sql: "INSERT INTO drip_sends (cohort, email_num, recipient, status) VALUES (?, ?, ?, 'sent')",
-            args: [cohort, nextEmail, email],
-          });
-          sent++;
+          // Batch succeeded. Log each recipient
+          const batchData = data?.data ?? [];
+          for (let j = 0; j < batch.length; j++) {
+            const emailId = batchData[j]?.id;
+            await db.execute({
+              sql: "INSERT INTO drip_sends (cohort, email_num, recipient, status) VALUES (?, ?, ?, 'sent')",
+              args: [cohort, nextEmail, batch[j]],
+            });
+            sent++;
+            if (emailId) {
+              console.log(`[drip]   SENT ${batch[j]} (${emailId})`);
+            }
+          }
         }
-
-        // 600ms delay between sends to avoid rate limits
-        await new Promise((r) => setTimeout(r, 600));
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        console.log(`[drip]   ERROR ${email}: ${msg}`);
-        await db.execute({
-          sql: "INSERT INTO drip_sends (cohort, email_num, recipient, status, error) VALUES (?, ?, ?, 'error', ?)",
-          args: [cohort, nextEmail, email, msg],
-        });
-        failed++;
+        console.log(`[drip]   Batch ERROR: ${msg}`);
+        for (const email of batch) {
+          await db.execute({
+            sql: "INSERT INTO drip_sends (cohort, email_num, recipient, status, error) VALUES (?, ?, ?, 'error', ?)",
+            args: [cohort, nextEmail, email, msg],
+          });
+        }
+        failed += batch.length;
       }
     }
 
