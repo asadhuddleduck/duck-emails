@@ -46,14 +46,15 @@ Full sequence takes ~18 days to complete.
 ### Cron Logic (runs daily at 09:00 UTC)
 1. Query `drip_contact_state` for all active contacts (excluding unsubscribes and completed)
 2. Group contacts by `last_email_sent`
-3. Pick the **lowest group** (everyone catches up before advancing)
-4. Check cadence timing (20h or 44h depending on email number)
+3. Process **ALL groups** sequentially (each gets its own audience sync + broadcast)
+4. For each group, check cadence timing (20h or 44h depending on email number)
 5. **Diff-sync** the Resend "General" audience (only add/remove changed contacts)
 6. Create and send a broadcast
 7. Update per-contact state in Turso and log to `drip_sends`
+8. Send consolidated Slack summary of all groups processed
 
-### Lowest-First Strategy
-If contacts are at different positions (e.g., 237 at Email 1, 29 at Email 2), the cron only sends to the lowest group each run. This naturally syncs everyone within 1-2 days. Once synced, the whole list advances together.
+### Multi-Group Processing
+The cron processes every group independently per run. If contacts are at different positions (e.g., 237 at Email 2, 3 new contacts at Email 0), each group gets its own broadcast. New contacts joining mid-sequence no longer block the main group from advancing.
 
 ### Unsubscribe Handling
 - Broadcasts use `{{{RESEND_UNSUBSCRIBE_URL}}}` (Resend's one-click unsubscribe, Gmail/Yahoo compliant)
@@ -92,9 +93,10 @@ error TEXT
 ```
 
 ### drip_unsubscribes
-Manual unsubscribe tracking.
+Unsubscribe and suppression tracking. Used for both manual unsubscribes and automated purchaser suppression.
 ```sql
 email TEXT PRIMARY KEY,
+reason TEXT DEFAULT 'manual',       -- 'manual', 'purchased', or other reasons
 unsubscribed_at TEXT DEFAULT (datetime('now'))
 ```
 
@@ -123,7 +125,9 @@ Resend rate limit: 2 requests/second. The cron uses 600ms delays between API cal
 src/
   app/
     api/
-      cron/send-drip/route.ts       -- Vercel cron (broadcast-based)
+      contacts/route.ts             -- POST: add contact to drip sequence (auth required)
+      contacts/suppress/route.ts    -- POST: suppress contact from drip (auth required)
+      cron/send-drip/route.ts       -- Vercel cron (broadcast-based, multi-group)
       health/route.ts               -- Health check endpoint (no auth)
   lib/
     db.ts                           -- Turso lazy proxy
@@ -164,6 +168,7 @@ All stored in Vercel and mirrored to `.env.local`:
 - `TURSO_AUTH_TOKEN` - Turso auth token
 - `CRON_SECRET` - Vercel cron authentication
 - `SLACK_DRIP_WEBHOOK` - Slack Incoming Webhook for #email-marketing channel
+- `API_SECRET` - Shared secret for `/api/contacts` and `/api/contacts/suppress` (same value as landing-page's `DUCK_EMAILS_API_SECRET`)
 
 ## Manual Operations
 
@@ -200,15 +205,35 @@ Every cron run sends a Slack notification (success, skip, or error).
 - Last broadcast time
 - Overall health status (boolean)
 
+## Cross-Project Integration (landing-page <> duck-emails)
+
+The landing-page project calls duck-emails API endpoints to sync the email marketing funnel:
+
+### Chat Email Sync (landing-page -> duck-emails)
+When the AI sales chat extracts a visitor's email (F&B, with contact info), `chat/save/route.ts` calls `POST /api/contacts` via `after()` (non-blocking). The contact enters the drip sequence at position 0 and starts receiving emails from the next cron run.
+
+### Purchaser Suppression (landing-page -> duck-emails)
+When a purchase completes, `onboarding.ts` calls `POST /api/contacts/suppress` inside `Promise.allSettled` alongside other post-purchase tasks (email confirmation, Notion task, Meta CAPI, etc.). The purchaser is added to `drip_unsubscribes` with `reason = 'purchased'` and excluded from all future drip emails.
+
+### Auth
+Both endpoints require `Authorization: Bearer ${API_SECRET}`. Landing-page stores the same value as `DUCK_EMAILS_API_SECRET`.
+
+### Landing-page env vars for this integration
+- `DUCK_EMAILS_API_URL` = `https://duck-emails-ten.vercel.app`
+- `DUCK_EMAILS_API_SECRET` = same value as duck-emails `API_SECRET`
+
 ## Adding New Contacts
 
-To add a new contact to the drip sequence:
+### Via API (preferred for integrations)
+`POST /api/contacts` with `{ "email": "...", "source": "chat" }` and auth header. Checks suppression/existing before inserting. Returns `{ status: "added" | "exists" | "suppressed" }`.
+
+### Via Turso (manual)
 1. Insert into `drip_contacts`: `INSERT INTO drip_contacts (email, cohort) VALUES ('new@example.com', 'D')`
 2. Insert into `drip_contact_state`: `INSERT INTO drip_contact_state (email, last_email_sent, last_sent_at) VALUES ('new@example.com', 0, '')`
 3. The cron will pick them up on the next run (they'll start at Email 1)
 4. They'll be added to the Resend audience automatically during the diff-sync
 
-Note: New contacts joining mid-sequence will be behind the main group. The cron's lowest-first strategy means they'll get their emails, but the main group won't advance until the new contact catches up (or you manually advance their state).
+Note: New contacts joining mid-sequence will be behind the main group. The multi-group cron processes each group independently, so new contacts no longer block the main group from advancing.
 
 ## After the Sequence Completes
 
