@@ -104,6 +104,73 @@ function patchUnsubscribeForBroadcast(html: string): string {
   return html.replaceAll(mailto, "{{{RESEND_UNSUBSCRIBE_URL}}}");
 }
 
+/** Send a broadcast to a group and update their state. Returns summary. */
+async function processGroup(
+  lastEmailSent: number,
+  group: { emails: string[]; maxSentAt: string }
+): Promise<{ emailNum: number; sent: number; skipped: boolean; error?: string; broadcastId?: string }> {
+  const nextEmail = lastEmailSent + 1;
+
+  // Check cadence
+  if (group.maxSentAt) {
+    const hoursSince = (Date.now() - new Date(group.maxSentAt).getTime()) / (1000 * 60 * 60);
+    const minHours = nextEmail <= 4 ? MIN_HOURS_DAILY : MIN_HOURS_ALTERNATE;
+
+    if (hoursSince < minHours) {
+      return { emailNum: nextEmail, sent: 0, skipped: true };
+    }
+  }
+
+  const template = getEmailTemplate(nextEmail);
+  const broadcastHtml = patchUnsubscribeForBroadcast(template.html);
+
+  console.log(`[drip] Sending Email ${nextEmail} "${template.subject}" to ${group.emails.length} contacts`);
+
+  // Sync audience for this group
+  const sync = await syncAudience(group.emails);
+  console.log(`[drip] Audience synced: +${sync.added} -${sync.removed} (${sync.failed} failed)`);
+
+  if (sync.failed > group.emails.length * 0.5) {
+    return { emailNum: nextEmail, sent: 0, skipped: false, error: `Sync failed (${sync.failed}/${group.emails.length})` };
+  }
+
+  // Create and send broadcast
+  const broadcastRes = await fetch(`${RESEND_API}/broadcasts`, {
+    method: "POST",
+    headers: resendHeaders(),
+    body: JSON.stringify({
+      audience_id: AUDIENCE_ID,
+      from: FROM,
+      subject: template.subject,
+      html: broadcastHtml,
+      send: true,
+    }),
+  });
+  const broadcastData = await broadcastRes.json();
+
+  if (!broadcastData.id) {
+    console.log(`[drip] Broadcast FAILED (${broadcastRes.status}): ${JSON.stringify(broadcastData)}`);
+    return { emailNum: nextEmail, sent: 0, skipped: false, error: `Broadcast failed: ${JSON.stringify(broadcastData)}` };
+  }
+
+  console.log(`[drip] Broadcast sent: ${broadcastData.id}`);
+
+  // Update per-contact state and log sends
+  const now = new Date().toISOString();
+  for (const email of group.emails) {
+    await db.execute({
+      sql: "UPDATE drip_contact_state SET last_email_sent = ?, last_sent_at = ? WHERE email = ?",
+      args: [nextEmail, now, email],
+    });
+    await db.execute({
+      sql: "INSERT INTO drip_sends (cohort, email_num, recipient, status) VALUES ('broadcast', ?, ?, 'sent')",
+      args: [nextEmail, email],
+    });
+  }
+
+  return { emailNum: nextEmail, sent: group.emails.length, skipped: false, broadcastId: broadcastData.id };
+}
+
 // ── Cron handler ───────────────────────────────────────────────────────────
 
 export async function GET(req: Request) {
@@ -150,94 +217,38 @@ export async function GET(req: Request) {
     contacts: g.emails.length,
   }));
 
-  // Process only the LOWEST email number group each run.
-  // This lets everyone catch up before advancing further.
-  const [lastEmailSent, group] = sortedGroups[0];
-  const nextEmail = lastEmailSent + 1;
+  // Process ALL groups (each gets its own broadcast)
+  const results: Array<{ emailNum: number; sent: number; skipped: boolean; error?: string; broadcastId?: string }> = [];
 
-  // Check cadence
-  if (group.maxSentAt) {
-    const hoursSince = (Date.now() - new Date(group.maxSentAt).getTime()) / (1000 * 60 * 60);
-    const minHours = nextEmail <= 4 ? MIN_HOURS_DAILY : MIN_HOURS_ALTERNATE;
+  for (const [lastEmailSent, group] of sortedGroups) {
+    const result = await processGroup(lastEmailSent, group);
+    results.push(result);
 
-    if (hoursSince < minHours) {
-      await notifySlack(`Skipped Email ${nextEmail} (too soon, ${Math.round(hoursSince)}h elapsed)`);
-      return NextResponse.json({
-        ok: true,
-        skipped: `Too soon for Email ${nextEmail} (${Math.round(hoursSince)}h elapsed, need ${minHours}h)`,
-        groups: groupSummary,
-      });
+    if (result.error) {
+      await notifySlack(`Email ${result.emailNum}: ${result.error}`, true);
     }
   }
 
-  const template = getEmailTemplate(nextEmail);
-  const broadcastHtml = patchUnsubscribeForBroadcast(template.html);
+  const totalSent = results.reduce((sum, r) => sum + r.sent, 0);
+  const errors = results.filter((r) => r.error);
+  const sent = results.filter((r) => r.sent > 0);
 
-  console.log(
-    `[drip] Sending Email ${nextEmail} "${template.subject}" to ${group.emails.length} contacts via broadcast`
-  );
-
-  // Step 1: Sync the General audience to match this group
-  console.log(`[drip] Syncing audience (${group.emails.length} target contacts)...`);
-  const sync = await syncAudience(group.emails);
-  console.log(`[drip] Audience synced: +${sync.added} -${sync.removed} (${sync.failed} failed)`);
-
-  if (sync.failed > group.emails.length * 0.5) {
-    await notifySlack(`Audience sync failed (${sync.failed}/${group.emails.length} errors)`, true);
-    return NextResponse.json({
-      ok: false,
-      error: `Too many audience sync failures (${sync.failed}/${group.emails.length})`,
-      sync,
-    });
+  // Build Slack summary
+  const parts: string[] = [];
+  for (const r of sent) {
+    parts.push(`Email ${r.emailNum}: ${r.sent} contacts (${r.broadcastId})`);
   }
-
-  // Step 2: Create and send broadcast
-  console.log("[drip] Creating broadcast...");
-  const broadcastRes = await fetch(`${RESEND_API}/broadcasts`, {
-    method: "POST",
-    headers: resendHeaders(),
-    body: JSON.stringify({
-      audience_id: AUDIENCE_ID,
-      from: FROM,
-      subject: template.subject,
-      html: broadcastHtml,
-      send: true,
-    }),
-  });
-  const broadcastData = await broadcastRes.json();
-
-  if (!broadcastData.id) {
-    console.log(`[drip] Broadcast FAILED (${broadcastRes.status}): ${JSON.stringify(broadcastData)}`);
-    await notifySlack("Broadcast creation failed: " + JSON.stringify(broadcastData), true);
-    return NextResponse.json({ ok: false, error: "Broadcast creation failed", details: broadcastData });
+  for (const r of results.filter((r) => r.skipped)) {
+    parts.push(`Email ${r.emailNum}: skipped (cadence)`);
   }
-
-  console.log(`[drip] Broadcast sent: ${broadcastData.id}`);
-
-  // Step 3: Update per-contact state and log sends
-  const now = new Date().toISOString();
-  for (const email of group.emails) {
-    await db.execute({
-      sql: "UPDATE drip_contact_state SET last_email_sent = ?, last_sent_at = ? WHERE email = ?",
-      args: [nextEmail, now, email],
-    });
-    await db.execute({
-      sql: "INSERT INTO drip_sends (cohort, email_num, recipient, status) VALUES ('broadcast', ?, ?, 'sent')",
-      args: [nextEmail, email],
-    });
+  if (parts.length > 0) {
+    await notifySlack(parts.join(" | "));
   }
-
-  console.log(`[drip] State updated for ${group.emails.length} contacts`);
-
-  await notifySlack(`Sent Email ${nextEmail} to ${group.emails.length} contacts (broadcast ${broadcastData.id})`);
 
   return NextResponse.json({
-    ok: true,
-    emailNum: nextEmail,
-    subject: template.subject,
-    broadcastId: broadcastData.id,
-    audienceSync: sync,
-    contactsProcessed: group.emails.length,
+    ok: errors.length === 0,
+    results,
+    totalSent,
     groups: groupSummary,
   });
 }

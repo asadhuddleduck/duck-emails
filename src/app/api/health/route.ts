@@ -4,7 +4,7 @@ import { TOTAL_EMAILS } from "@/lib/drip-templates";
 
 export async function GET() {
   try {
-    const [groupsResult, stuckResult, lastBroadcastResult, unsubResult, activeResult] =
+    const [groupsResult, stuckResult, lastBroadcastResult, unsubResult, activeResult, suppressedResult] =
       await Promise.all([
         // 1. Distribution of contacts by last_email_sent
         db.execute(
@@ -35,6 +35,9 @@ export async function GET() {
                   AND email NOT IN (SELECT email FROM drip_unsubscribes)`,
           args: [TOTAL_EMAILS],
         }),
+
+        // 6. Total suppressed (purchasers)
+        db.execute("SELECT COUNT(*) AS count FROM drip_unsubscribes WHERE reason = 'purchased'"),
       ]);
 
     const groups: Record<number, number> = {};
@@ -50,6 +53,7 @@ export async function GET() {
     const totalUnsubscribes = (unsubResult.rows[0]?.count as number) ?? 0;
 
     const totalActive = (activeResult.rows[0]?.count as number) ?? 0;
+    const totalSuppressed = (suppressedResult.rows[0]?.count as number) ?? 0;
 
     // Healthy if no stuck contacts and last broadcast was within 48h
     let broadcastRecent = false;
@@ -67,6 +71,7 @@ export async function GET() {
       lastBroadcast,
       totalUnsubscribes,
       totalActive,
+      totalSuppressed,
       healthy,
     });
   } catch (error) {

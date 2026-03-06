@@ -121,7 +121,10 @@ Resend rate limit: 2 requests/second. The cron uses 600ms delays between API cal
 
 ```
 src/
-  app/api/cron/send-drip/route.ts  -- Vercel cron (broadcast-based)
+  app/
+    api/
+      cron/send-drip/route.ts       -- Vercel cron (broadcast-based)
+      health/route.ts               -- Health check endpoint (no auth)
   lib/
     db.ts                           -- Turso lazy proxy
     resend.ts                       -- Resend client singleton
@@ -160,6 +163,7 @@ All stored in Vercel and mirrored to `.env.local`:
 - `TURSO_DATABASE_URL` - Turso database URL
 - `TURSO_AUTH_TOKEN` - Turso auth token
 - `CRON_SECRET` - Vercel cron authentication
+- `SLACK_DRIP_WEBHOOK` - Slack Incoming Webhook for #email-marketing channel
 
 ## Manual Operations
 
@@ -187,7 +191,7 @@ npx tsx scripts/add-to-segment.ts <audience-id> <last-email-sent>
 ### Slack Notifications
 Every cron run sends a Slack notification (success, skip, or error).
 - Env var: `SLACK_DRIP_WEBHOOK` (Vercel + .env.local)
-- Channel: same as landing page notifications
+- Channel: #email-marketing
 
 ### Health Endpoint
 `GET /api/health` — no auth, returns JSON with:
