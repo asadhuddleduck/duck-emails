@@ -23,8 +23,9 @@ Resend has two completely separate email systems with different limits:
 
 ### Marketing Emails (Broadcasts)
 - **Limit:** UNLIMITED sends, up to 1,000 contacts
-- **API:** `POST /broadcasts` with a `segment_id` (audience)
+- **API:** `POST /broadcasts` with an `audience_id`
 - **Use case:** Bulk campaigns, drip sequences, newsletters
+- **API field names (CRITICAL):** When creating broadcasts, use `audience_id` (NOT `segment_id`). When adding contacts, use `POST /audiences/{id}/contacts` (NOT `/contacts/{email}/segments/{id}`). These are different Resend API concepts — mixing them causes silent failures.
 - **Requires an audience** - contacts must be added to a Resend audience first
 - **Audience limit:** 3 audiences on free tier (currently all 3 used)
 - **Does NOT count against transactional quota** - completely separate
@@ -126,7 +127,6 @@ src/
     resend.ts                       -- Resend client singleton
     drip-templates.ts               -- All 10 email templates
 scripts/
-  send-drip.ts                      -- Local CLI sender (transactional, for manual use)
   add-to-segment.ts                 -- Add contacts to a Resend audience
 vercel.json                         -- Cron schedule (0 9 * * *)
 ```
@@ -177,17 +177,24 @@ curl -X PATCH "https://api.resend.com/contacts/email@example.com" \
 turso db shell duck-emails "SELECT last_email_sent, COUNT(*) FROM drip_contact_state GROUP BY last_email_sent"
 ```
 
-### Manual send (bypasses cron, uses transactional API)
-```bash
-npx tsx scripts/send-drip.ts --dry-run    # preview
-npx tsx scripts/send-drip.ts              # send (max 100)
-npx tsx scripts/send-drip.ts --limit 50   # send with custom limit
-```
-
 ### Add contacts to a Resend audience
 ```bash
 npx tsx scripts/add-to-segment.ts <audience-id> <last-email-sent>
 ```
+
+## Monitoring
+
+### Slack Notifications
+Every cron run sends a Slack notification (success, skip, or error).
+- Env var: `SLACK_DRIP_WEBHOOK` (Vercel + .env.local)
+- Channel: same as landing page notifications
+
+### Health Endpoint
+`GET /api/health` — no auth, returns JSON with:
+- Contact distribution by email position
+- Stuck contacts (>48h without advancing)
+- Last broadcast time
+- Overall health status (boolean)
 
 ## Adding New Contacts
 

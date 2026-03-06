@@ -15,6 +15,20 @@ const AUDIENCE_ID = "3cadc519-dfdc-4eff-b619-75971113b02f";
 const MIN_HOURS_DAILY = 20;
 const MIN_HOURS_ALTERNATE = 44;
 
+async function notifySlack(message: string, isError = false) {
+  const url = process.env.SLACK_DRIP_WEBHOOK;
+  if (!url) return;
+  try {
+    await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text: `${isError ? ":rotating_light:" : ":envelope:"} Duck Emails: ${message}`,
+      }),
+    });
+  } catch { /* non-blocking */ }
+}
+
 // ── Resend helpers ─────────────────────────────────────────────────────────
 
 function resendHeaders(): HeadersInit {
@@ -41,7 +55,7 @@ async function resendFetch(url: string, options: RequestInit = {}): Promise<Resp
 /** Sync the General audience to match a target list of emails (diff-based). */
 async function syncAudience(targetEmails: string[]): Promise<{ added: number; removed: number; failed: number }> {
   // Get current audience contacts
-  const listRes = await fetch(`${RESEND_API}/audiences/${AUDIENCE_ID}/contacts?limit=500`, {
+  const listRes = await fetch(`${RESEND_API}/audiences/${AUDIENCE_ID}/contacts?limit=1000`, {
     headers: resendHeaders(),
   });
   const listData = await listRes.json();
@@ -69,8 +83,8 @@ async function syncAudience(targetEmails: string[]): Promise<{ added: number; re
 
   for (const email of toAdd) {
     const res = await resendFetch(
-      `${RESEND_API}/contacts/${encodeURIComponent(email)}/segments/${AUDIENCE_ID}`,
-      { method: "POST" }
+      `${RESEND_API}/audiences/${AUDIENCE_ID}/contacts`,
+      { method: "POST", body: JSON.stringify({ email, unsubscribed: false }) }
     );
     const data = await res.json();
     if (data.id || data.audienceId) added++;
@@ -99,6 +113,7 @@ export async function GET(req: Request) {
   }
 
   if (!process.env.RESEND_API_KEY) {
+    await notifySlack("RESEND_API_KEY not set", true);
     return NextResponse.json({ error: "RESEND_API_KEY not set" }, { status: 500 });
   }
 
@@ -112,6 +127,7 @@ export async function GET(req: Request) {
   `);
 
   if (stateRows.rows.length === 0) {
+    await notifySlack("Sequence complete for all contacts");
     return NextResponse.json({ ok: true, message: "No active contacts. Sequence complete for all." });
   }
 
@@ -145,6 +161,7 @@ export async function GET(req: Request) {
     const minHours = nextEmail <= 4 ? MIN_HOURS_DAILY : MIN_HOURS_ALTERNATE;
 
     if (hoursSince < minHours) {
+      await notifySlack(`Skipped Email ${nextEmail} (too soon, ${Math.round(hoursSince)}h elapsed)`);
       return NextResponse.json({
         ok: true,
         skipped: `Too soon for Email ${nextEmail} (${Math.round(hoursSince)}h elapsed, need ${minHours}h)`,
@@ -166,6 +183,7 @@ export async function GET(req: Request) {
   console.log(`[drip] Audience synced: +${sync.added} -${sync.removed} (${sync.failed} failed)`);
 
   if (sync.failed > group.emails.length * 0.5) {
+    await notifySlack(`Audience sync failed (${sync.failed}/${group.emails.length} errors)`, true);
     return NextResponse.json({
       ok: false,
       error: `Too many audience sync failures (${sync.failed}/${group.emails.length})`,
@@ -179,7 +197,7 @@ export async function GET(req: Request) {
     method: "POST",
     headers: resendHeaders(),
     body: JSON.stringify({
-      segment_id: AUDIENCE_ID,
+      audience_id: AUDIENCE_ID,
       from: FROM,
       subject: template.subject,
       html: broadcastHtml,
@@ -189,7 +207,8 @@ export async function GET(req: Request) {
   const broadcastData = await broadcastRes.json();
 
   if (!broadcastData.id) {
-    console.log(`[drip] Broadcast FAILED: ${JSON.stringify(broadcastData)}`);
+    console.log(`[drip] Broadcast FAILED (${broadcastRes.status}): ${JSON.stringify(broadcastData)}`);
+    await notifySlack("Broadcast creation failed: " + JSON.stringify(broadcastData), true);
     return NextResponse.json({ ok: false, error: "Broadcast creation failed", details: broadcastData });
   }
 
@@ -209,6 +228,8 @@ export async function GET(req: Request) {
   }
 
   console.log(`[drip] State updated for ${group.emails.length} contacts`);
+
+  await notifySlack(`Sent Email ${nextEmail} to ${group.emails.length} contacts (broadcast ${broadcastData.id})`);
 
   return NextResponse.json({
     ok: true,
