@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { getEmailTemplate, TOTAL_EMAILS } from "@/lib/drip-templates";
+import { notify } from "@/lib/notify";
 
 // Vercel Pro: allow up to 300s
 export const maxDuration = 300;
@@ -14,20 +15,6 @@ const AUDIENCE_ID = "3cadc519-dfdc-4eff-b619-75971113b02f";
 // Cadence: emails 1-4 daily, emails 5-10 every other day
 const MIN_HOURS_DAILY = 20;
 const MIN_HOURS_ALTERNATE = 44;
-
-async function notifySlack(message: string, isError = false) {
-  const url = process.env.SLACK_DRIP_WEBHOOK;
-  if (!url) return;
-  try {
-    await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        text: `${isError ? ":rotating_light:" : ":envelope:"} Duck Emails: ${message}`,
-      }),
-    });
-  } catch { /* non-blocking */ }
-}
 
 // ── Resend helpers ─────────────────────────────────────────────────────────
 
@@ -180,7 +167,12 @@ export async function GET(req: Request) {
   }
 
   if (!process.env.RESEND_API_KEY) {
-    await notifySlack("RESEND_API_KEY not set", true);
+    await notify({
+      severity: "broken",
+      headline: "The drip sequence cannot send, RESEND_API_KEY is missing",
+      details: ["No prospect got an email this run, and none will until the key is set."],
+      action: "Set RESEND_API_KEY in Vercel.",
+    });
     return NextResponse.json({ error: "RESEND_API_KEY not set" }, { status: 500 });
   }
 
@@ -194,7 +186,13 @@ export async function GET(req: Request) {
   `);
 
   if (stateRows.rows.length === 0) {
-    await notifySlack("Sequence complete for all contacts");
+    // Everyone has finished all 10 emails. This fires every single day and has
+    // nothing in it to act on, so it belongs in the quiet channel.
+    await notify({
+      severity: "fyi",
+      headline: "Everyone has finished the drip, so nothing was sent",
+      details: [`All contacts have had all ${TOTAL_EMAILS} emails.`],
+    });
     return NextResponse.json({ ok: true, message: "No active contacts. Sequence complete for all." });
   }
 
@@ -225,7 +223,15 @@ export async function GET(req: Request) {
     results.push(result);
 
     if (result.error) {
-      await notifySlack(`Email ${result.emailNum}: ${result.error}`, true);
+      await notify({
+        severity: "broken",
+        headline: `Drip email ${result.emailNum} failed to send`,
+        details: [
+          `${group.emails.length} prospect${group.emails.length > 1 ? "s" : ""} did not get it.`,
+          result.error,
+        ],
+        action: "They stay stuck at this step until the next run succeeds.",
+      });
     }
   }
 
@@ -242,7 +248,11 @@ export async function GET(req: Request) {
     parts.push(`Email ${r.emailNum}: skipped (cadence)`);
   }
   if (parts.length > 0) {
-    await notifySlack(parts.join(" | "));
+    await notify({
+      severity: "fyi",
+      headline: `Drip ran clean, ${totalSent} email${totalSent === 1 ? "" : "s"} sent`,
+      details: parts,
+    });
   }
 
   return NextResponse.json({
