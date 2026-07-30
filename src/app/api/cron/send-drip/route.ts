@@ -1,12 +1,15 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { getEmailTemplate, TOTAL_EMAILS } from "@/lib/drip-templates";
+import {
+  htmlToPlainText,
+  marketingEmailConfig,
+} from "@/lib/marketing-email";
 import { notify } from "@/lib/notify";
 
 // Vercel Pro: allow up to 300s
 export const maxDuration = 300;
 
-const FROM = "Asad from Huddle Duck <asad@huddleduck.co.uk>";
 const RESEND_API = "https://api.resend.com";
 
 // The "General" audience in Resend (used as a staging area for broadcasts)
@@ -110,6 +113,10 @@ async function processGroup(
 
   const template = getEmailTemplate(nextEmail);
   const broadcastHtml = patchUnsubscribeForBroadcast(template.html);
+  const broadcastText = patchUnsubscribeForBroadcast(
+    htmlToPlainText(template.html),
+  );
+  const sender = marketingEmailConfig();
 
   console.log(`[drip] Sending Email ${nextEmail} "${template.subject}" to ${group.emails.length} contacts`);
 
@@ -127,9 +134,11 @@ async function processGroup(
     headers: resendHeaders(),
     body: JSON.stringify({
       audience_id: AUDIENCE_ID,
-      from: FROM,
+      from: sender.from,
+      reply_to: sender.replyTo,
       subject: template.subject,
       html: broadcastHtml,
+      text: broadcastText,
       send: true,
     }),
   });

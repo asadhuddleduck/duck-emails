@@ -1,5 +1,18 @@
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
+## Marketing sender
+
+The drip sequence uses a separate, configurable sender identity:
+
+```env
+EMAIL_MARKETING_FROM=Asad from SuperPulse <asad@news.superpulse.io>
+EMAIL_MARKETING_REPLY_TO=asad@huddleduck.co.uk
+```
+
+Until `EMAIL_MARKETING_FROM` is set, the app falls back to `EMAIL_FROM`, then
+its existing `asad@huddleduck.co.uk` sender. This keeps deployments safe while
+the marketing domain is being verified.
+
 ## Getting Started
 
 First, run the development server:
