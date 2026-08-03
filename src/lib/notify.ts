@@ -27,10 +27,9 @@ export async function notify(a: {
   details?: (string | null | undefined)[];
   action?: string; // omit => "Nothing to do."
 }): Promise<void> {
-  const routed =
-    a.severity === "fyi"
-      ? process.env.SLACK_FIREHOSE_WEBHOOK_URL
-      : process.env.SLACK_ALERT_WEBHOOK_URL;
+  // ONE channel, #alerts (3 Aug 2026). The old `fyi` split sent receipts to a
+  // muted #firehose that nobody ever opened.
+  const routed = process.env.SLACK_ALERT_WEBHOOK_URL;
   const url =
     routed?.trim() ||
     process.env.SLACK_WEBHOOK_URL?.trim() ||

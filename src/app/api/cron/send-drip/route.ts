@@ -178,9 +178,9 @@ export async function GET(req: Request) {
   if (!process.env.RESEND_API_KEY) {
     await notify({
       severity: "broken",
-      headline: "The drip sequence cannot send, RESEND_API_KEY is missing",
-      details: ["No prospect got an email this run, and none will until the key is set."],
-      action: "Set RESEND_API_KEY in Vercel.",
+      headline: "Nobody is getting drip emails, the sending account is disconnected",
+      details: ["No prospect got an email this run, and none will until it is reconnected."],
+      action: "Tell me and I will reconnect it. The whole sequence is frozen where it is until then.",
     });
     return NextResponse.json({ error: "RESEND_API_KEY not set" }, { status: 500 });
   }
@@ -195,13 +195,8 @@ export async function GET(req: Request) {
   `);
 
   if (stateRows.rows.length === 0) {
-    // Everyone has finished all 10 emails. This fires every single day and has
-    // nothing in it to act on, so it belongs in the quiet channel.
-    await notify({
-      severity: "fyi",
-      headline: "Everyone has finished the drip, so nothing was sent",
-      details: [`All contacts have had all ${TOTAL_EMAILS} emails.`],
-    });
+    // Slack alert removed 3 Aug 2026: everyone having finished the sequence fires
+    // every single day forever and there is nothing in it to act on.
     return NextResponse.json({ ok: true, message: "No active contacts. Sequence complete for all." });
   }
 
@@ -234,35 +229,22 @@ export async function GET(req: Request) {
     if (result.error) {
       await notify({
         severity: "broken",
-        headline: `Drip email ${result.emailNum} failed to send`,
+        headline: `Drip email ${result.emailNum} did not go out`,
         details: [
-          `${group.emails.length} prospect${group.emails.length > 1 ? "s" : ""} did not get it.`,
-          result.error,
+          `${group.emails.length} prospect${group.emails.length > 1 ? "s" : ""} did not get it, and they stay where they are in the sequence.`,
         ],
-        action: "They stay stuck at this step until the next run succeeds.",
+        action:
+          "Nothing to do yet, tomorrow's run tries again. If the same email fails two days running, tell me.",
       });
     }
   }
 
   const totalSent = results.reduce((sum, r) => sum + r.sent, 0);
   const errors = results.filter((r) => r.error);
-  const sent = results.filter((r) => r.sent > 0);
 
-  // Build Slack summary
-  const parts: string[] = [];
-  for (const r of sent) {
-    parts.push(`Email ${r.emailNum}: ${r.sent} contacts (${r.broadcastId})`);
-  }
-  for (const r of results.filter((r) => r.skipped)) {
-    parts.push(`Email ${r.emailNum}: skipped (cadence)`);
-  }
-  if (parts.length > 0) {
-    await notify({
-      severity: "fyi",
-      headline: `Drip ran clean, ${totalSent} email${totalSent === 1 ? "" : "s"} sent`,
-      details: parts,
-    });
-  }
+  // Slack alert removed 3 Aug 2026: "Drip ran clean, N emails sent" was a pure
+  // success receipt. The per-group failure alert above still fires. The full
+  // per-group breakdown stays in the JSON response below.
 
   return NextResponse.json({
     ok: errors.length === 0,
