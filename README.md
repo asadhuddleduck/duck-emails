@@ -1,49 +1,14 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Duck Emails
 
-## Marketing sender
+Huddle Duck's existing drip sequence submits individual, permissioned messages to HatchFlow. HatchFlow controls the sender, shared daily limits, suppression, delivery records and replies. This app owns template selection and contact cadence.
 
-The drip sequence uses a separate, configurable sender identity:
+Addresses alone never grant marketing permission. Existing contacts stay held until a verified consent record is imported. Queued work never advances the sequence: only a provider acceptance receipt does.
 
-```env
-EMAIL_MARKETING_FROM=Asad from SuperPulse <asad@news.superpulse.io>
-EMAIL_MARKETING_REPLY_TO=asad@huddleduck.co.uk
-```
+See [the email operations runbook](docs/HATCHFLOW-EMAIL.md) for configuration, migration and recovery. Historical senders are preserved as non-executable text in `docs/email-archive/`.
 
-Until `EMAIL_MARKETING_FROM` is set, the app falls back to `EMAIL_FROM`, then
-its existing `asad@huddleduck.co.uk` sender. This keeps deployments safe while
-the marketing domain is being verified.
-
-## Getting Started
-
-First, run the development server:
-
-```bash
+```sh
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm run test:email
+npm run typecheck
+npm run lint
 ```
-
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
-
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
-
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.

@@ -4,8 +4,6 @@
 // ---------------------------------------------------------------------------
 
 const CTA_BASE = "https://start.huddleduck.co.uk";
-const UNSUB_MAILTO =
-  "mailto:asad@huddleduck.co.uk?subject=Unsubscribe&body=Please%20remove%20me%20from%20future%20emails";
 
 export interface EmailTemplate {
   subject: string;
@@ -57,17 +55,9 @@ ${body}
 <!-- Sign off -->
 <tr><td style="padding:0 0 24px;">
   <p style="margin:0;font-size:15px;color:#555555;line-height:1.5;">Asad</p>
-  <p style="margin:4px 0 0;font-size:13px;color:#999999;">Huddle Duck Ltd &middot; Solihull, UK</p>
 </td></tr>
 
-<!-- Unsubscribe -->
-<tr><td style="padding:0;">
-  <p style="margin:0;font-size:12px;color:#999999;line-height:1.5;">
-    Not interested in AI advertising for food businesses? Totally fair -
-    <a href="${UNSUB_MAILTO}" style="color:#999999;text-decoration:underline;">unsubscribe here</a>
-    and I won&rsquo;t bother you again.
-  </p>
-</td></tr>
+<!-- HatchFlow appends the canonical legal and unsubscribe footer. -->
 
 </table>
 </td></tr>

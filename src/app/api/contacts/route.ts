@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import { authenticateEmailCallback } from "@/lib/hatchflow-email";
 
 export async function POST(req: Request) {
-  const auth = req.headers.get("authorization");
-  if (auth !== `Bearer ${process.env.API_SECRET}`) {
+  if (!authenticateEmailCallback(req, process.env.API_SECRET)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -22,6 +22,22 @@ export async function POST(req: Request) {
   });
   if (excluded.rows.length > 0) {
     return NextResponse.json({ ok: true, status: "suppressed" });
+  }
+
+  // Capturing an address is not permission. Existing callers that only submit
+  // an email still register a contact, but it remains held for marketing.
+  if (body.marketingConsent === true) {
+    const evidence = typeof body.consentEvidenceRef === "string" ? body.consentEvidenceRef.trim() : "";
+    const recordedAt = typeof body.consentRecordedAt === "string" ? body.consentRecordedAt : "";
+    if (!evidence || evidence.length > 1000 || !Number.isFinite(Date.parse(recordedAt)) || Date.parse(recordedAt) > Date.now()) {
+      return NextResponse.json({ error: "Verified consent evidence and its recorded time are required" }, { status: 400 });
+    }
+    await db.execute({
+      sql: `INSERT INTO email_marketing_permissions (email, allowed, evidence_ref, verified_at)
+        VALUES (?, 1, ?, ?) ON CONFLICT(email) DO UPDATE SET allowed = 1,
+        evidence_ref = excluded.evidence_ref, verified_at = excluded.verified_at, updated_at = CURRENT_TIMESTAMP`,
+      args: [email, evidence, recordedAt],
+    });
   }
 
   // Check if already in the drip sequence

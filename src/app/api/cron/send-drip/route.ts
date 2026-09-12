@@ -1,255 +1,36 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { getEmailTemplate, TOTAL_EMAILS } from "@/lib/drip-templates";
-import {
-  htmlToPlainText,
-  marketingEmailConfig,
-} from "@/lib/marketing-email";
-import { notify } from "@/lib/notify";
+import { htmlToPlainText } from "@/lib/marketing-email";
+import { authenticateEmailCallback } from "@/lib/hatchflow-email";
+import { buildDripRequest, dripEligibility, dripSource } from "@/lib/drip-delivery";
+import { mirrorPendingUnsubscribes } from "@/lib/email-suppression";
 
-// Vercel Pro: allow up to 300s
 export const maxDuration = 300;
 
-const RESEND_API = "https://api.resend.com";
-
-// The "General" audience in Resend (used as a staging area for broadcasts)
-const AUDIENCE_ID = "3cadc519-dfdc-4eff-b619-75971113b02f";
-
-// Cadence: emails 1-4 daily, emails 5-10 every other day
-const MIN_HOURS_DAILY = 20;
-const MIN_HOURS_ALTERNATE = 44;
-
-// ── Resend helpers ─────────────────────────────────────────────────────────
-
-function resendHeaders(): HeadersInit {
-  return {
-    Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
-    "Content-Type": "application/json",
-  };
-}
-
-async function resendFetch(url: string, options: RequestInit = {}): Promise<Response> {
-  // Respect 2 req/sec rate limit
-  await new Promise((r) => setTimeout(r, 600));
-  const res = await fetch(url, { ...options, headers: { ...resendHeaders(), ...(options.headers || {}) } });
-
-  // Auto-retry on 429
-  if (res.status === 429) {
-    await new Promise((r) => setTimeout(r, 2000));
-    return fetch(url, { ...options, headers: { ...resendHeaders(), ...(options.headers || {}) } });
+// This cron offers due work to HatchFlow. Only acceptance receipts advance a step.
+export async function GET(request: Request) {
+  if (!authenticateEmailCallback(request, process.env.CRON_SECRET)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const source = dripSource(db);
+  await source.reconcilePending();
+  await mirrorPendingUnsubscribes(db);
+  const rows = await db.execute({
+    sql: `SELECT cs.email, cs.last_email_sent FROM drip_contact_state cs
+      JOIN email_marketing_permissions p ON p.email = lower(trim(cs.email)) AND p.allowed = 1
+      WHERE cs.last_email_sent < ? AND p.evidence_ref != ''
+        AND NOT EXISTS(SELECT 1 FROM drip_unsubscribes u WHERE lower(trim(u.email)) = lower(trim(cs.email)))
+      ORDER BY cs.last_email_sent, cs.email LIMIT 200`, args: [TOTAL_EMAILS] });
+  const counts = { accepted: 0, queued: 0, suppressed: 0, uncertain: 0, failed: 0, held: 0 };
+  for (const row of rows.rows) {
+    try {
+      const emailNum = Number(row.last_email_sent) + 1;
+      const template = getEmailTemplate(emailNum);
+      const job = buildDripRequest({ email: String(row.email), emailNum, subject: template.subject,
+        html: template.html, text: htmlToPlainText(template.html) });
+      if (!(await dripEligibility(db, { ...job, source: "duck-emails" })).eligible) { counts.held++; continue; }
+      const receipt = await source.submit(job);
+      counts[receipt.status]++;
+    } catch { counts.failed++; }
   }
-
-  return res;
-}
-
-/** Sync the General audience to match a target list of emails (diff-based). */
-async function syncAudience(targetEmails: string[]): Promise<{ added: number; removed: number; failed: number }> {
-  // Get current audience contacts
-  const listRes = await fetch(`${RESEND_API}/audiences/${AUDIENCE_ID}/contacts?limit=1000`, {
-    headers: resendHeaders(),
-  });
-  const listData = await listRes.json();
-  const current = (listData.data || []) as Array<{ id: string; email: string }>;
-
-  const currentMap = new Map(current.map((c) => [c.email.toLowerCase(), c.id]));
-  const targetSet = new Set(targetEmails.map((e) => e.toLowerCase()));
-
-  // Contacts to remove (in audience but not in target)
-  const toRemove = current.filter((c) => !targetSet.has(c.email.toLowerCase()));
-  // Contacts to add (in target but not in audience)
-  const toAdd = targetEmails.filter((e) => !currentMap.has(e.toLowerCase()));
-
-  let added = 0;
-  let removed = 0;
-  let failed = 0;
-
-  for (const contact of toRemove) {
-    const res = await resendFetch(`${RESEND_API}/audiences/${AUDIENCE_ID}/contacts/${contact.id}`, {
-      method: "DELETE",
-    });
-    if (res.ok) removed++;
-    else failed++;
-  }
-
-  for (const email of toAdd) {
-    const res = await resendFetch(
-      `${RESEND_API}/audiences/${AUDIENCE_ID}/contacts`,
-      { method: "POST", body: JSON.stringify({ email, unsubscribed: false }) }
-    );
-    const data = await res.json();
-    if (data.id || data.audienceId) added++;
-    else {
-      console.log(`[drip] Failed to add ${email}: ${JSON.stringify(data)}`);
-      failed++;
-    }
-  }
-
-  return { added, removed, failed };
-}
-
-/** Replace mailto unsubscribe link with Resend's one-click broadcast URL. */
-function patchUnsubscribeForBroadcast(html: string): string {
-  const mailto =
-    "mailto:asad@huddleduck.co.uk?subject=Unsubscribe&body=Please%20remove%20me%20from%20future%20emails";
-  return html.replaceAll(mailto, "{{{RESEND_UNSUBSCRIBE_URL}}}");
-}
-
-/** Send a broadcast to a group and update their state. Returns summary. */
-async function processGroup(
-  lastEmailSent: number,
-  group: { emails: string[]; maxSentAt: string }
-): Promise<{ emailNum: number; sent: number; skipped: boolean; error?: string; broadcastId?: string }> {
-  const nextEmail = lastEmailSent + 1;
-
-  // Check cadence
-  if (group.maxSentAt) {
-    const hoursSince = (Date.now() - new Date(group.maxSentAt).getTime()) / (1000 * 60 * 60);
-    const minHours = nextEmail <= 4 ? MIN_HOURS_DAILY : MIN_HOURS_ALTERNATE;
-
-    if (hoursSince < minHours) {
-      return { emailNum: nextEmail, sent: 0, skipped: true };
-    }
-  }
-
-  const template = getEmailTemplate(nextEmail);
-  const broadcastHtml = patchUnsubscribeForBroadcast(template.html);
-  const broadcastText = patchUnsubscribeForBroadcast(
-    htmlToPlainText(template.html),
-  );
-  const sender = marketingEmailConfig();
-
-  console.log(`[drip] Sending Email ${nextEmail} "${template.subject}" to ${group.emails.length} contacts`);
-
-  // Sync audience for this group
-  const sync = await syncAudience(group.emails);
-  console.log(`[drip] Audience synced: +${sync.added} -${sync.removed} (${sync.failed} failed)`);
-
-  if (sync.failed > group.emails.length * 0.5) {
-    return { emailNum: nextEmail, sent: 0, skipped: false, error: `Sync failed (${sync.failed}/${group.emails.length})` };
-  }
-
-  // Create and send broadcast
-  const broadcastRes = await fetch(`${RESEND_API}/broadcasts`, {
-    method: "POST",
-    headers: resendHeaders(),
-    body: JSON.stringify({
-      audience_id: AUDIENCE_ID,
-      from: sender.from,
-      reply_to: sender.replyTo,
-      subject: template.subject,
-      html: broadcastHtml,
-      text: broadcastText,
-      send: true,
-    }),
-  });
-  const broadcastData = await broadcastRes.json();
-
-  if (!broadcastData.id) {
-    console.log(`[drip] Broadcast FAILED (${broadcastRes.status}): ${JSON.stringify(broadcastData)}`);
-    return { emailNum: nextEmail, sent: 0, skipped: false, error: `Broadcast failed: ${JSON.stringify(broadcastData)}` };
-  }
-
-  console.log(`[drip] Broadcast sent: ${broadcastData.id}`);
-
-  // Update per-contact state and log sends
-  const now = new Date().toISOString();
-  for (const email of group.emails) {
-    await db.execute({
-      sql: "UPDATE drip_contact_state SET last_email_sent = ?, last_sent_at = ? WHERE email = ?",
-      args: [nextEmail, now, email],
-    });
-    await db.execute({
-      sql: "INSERT INTO drip_sends (cohort, email_num, recipient, status) VALUES ('broadcast', ?, ?, 'sent')",
-      args: [nextEmail, email],
-    });
-  }
-
-  return { emailNum: nextEmail, sent: group.emails.length, skipped: false, broadcastId: broadcastData.id };
-}
-
-// ── Cron handler ───────────────────────────────────────────────────────────
-
-export async function GET(req: Request) {
-  const authHeader = req.headers.get("authorization");
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
-  if (!process.env.RESEND_API_KEY) {
-    await notify({
-      severity: "broken",
-      headline: "Nobody is getting drip emails, the sending account is disconnected",
-      details: ["No prospect got an email this run, and none will until it is reconnected."],
-      action: "Tell me and I will reconnect it. The whole sequence is frozen where it is until then.",
-    });
-    return NextResponse.json({ error: "RESEND_API_KEY not set" }, { status: 500 });
-  }
-
-  // Get all active contacts (exclude unsubscribes and completed)
-  const stateRows = await db.execute(`
-    SELECT cs.email, cs.last_email_sent, cs.last_sent_at
-    FROM drip_contact_state cs
-    LEFT JOIN drip_unsubscribes u ON cs.email = u.email
-    WHERE u.email IS NULL AND cs.last_email_sent < ${TOTAL_EMAILS}
-    ORDER BY cs.last_email_sent ASC, cs.email ASC
-  `);
-
-  if (stateRows.rows.length === 0) {
-    // Slack alert removed 3 Aug 2026: everyone having finished the sequence fires
-    // every single day forever and there is nothing in it to act on.
-    return NextResponse.json({ ok: true, message: "No active contacts. Sequence complete for all." });
-  }
-
-  // Group contacts by last_email_sent
-  const groups = new Map<number, { emails: string[]; maxSentAt: string }>();
-  for (const row of stateRows.rows) {
-    const lastEmailSent = row.last_email_sent as number;
-    const lastSentAt = (row.last_sent_at as string) || "";
-    const email = row.email as string;
-
-    const group = groups.get(lastEmailSent) || { emails: [], maxSentAt: "" };
-    group.emails.push(email);
-    if (lastSentAt > group.maxSentAt) group.maxSentAt = lastSentAt;
-    groups.set(lastEmailSent, group);
-  }
-
-  const sortedGroups = [...groups.entries()].sort((a, b) => a[0] - b[0]);
-  const groupSummary = sortedGroups.map(([num, g]) => ({
-    atEmail: num,
-    contacts: g.emails.length,
-  }));
-
-  // Process ALL groups (each gets its own broadcast)
-  const results: Array<{ emailNum: number; sent: number; skipped: boolean; error?: string; broadcastId?: string }> = [];
-
-  for (const [lastEmailSent, group] of sortedGroups) {
-    const result = await processGroup(lastEmailSent, group);
-    results.push(result);
-
-    if (result.error) {
-      await notify({
-        severity: "broken",
-        headline: `Drip email ${result.emailNum} did not go out`,
-        details: [
-          `${group.emails.length} prospect${group.emails.length > 1 ? "s" : ""} did not get it, and they stay where they are in the sequence.`,
-        ],
-        action:
-          "Nothing to do yet, tomorrow's run tries again. If the same email fails two days running, tell me.",
-      });
-    }
-  }
-
-  const totalSent = results.reduce((sum, r) => sum + r.sent, 0);
-  const errors = results.filter((r) => r.error);
-
-  // Slack alert removed 3 Aug 2026: "Drip ran clean, N emails sent" was a pure
-  // success receipt. The per-group failure alert above still fires. The full
-  // per-group breakdown stays in the JSON response below.
-
-  return NextResponse.json({
-    ok: errors.length === 0,
-    results,
-    totalSent,
-    groups: groupSummary,
-  });
+  return NextResponse.json({ ok: counts.failed === 0, ...counts });
 }

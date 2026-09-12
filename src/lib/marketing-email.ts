@@ -1,7 +1,3 @@
-const DEFAULT_MARKETING_FROM =
-  "Asad from Huddle Duck <asad@huddleduck.co.uk>";
-const DEFAULT_MARKETING_REPLY_TO = "asad@huddleduck.co.uk";
-
 const HTML_ENTITIES: Record<string, string> = {
   amp: "&",
   apos: "'",
@@ -71,20 +67,4 @@ export function htmlToPlainText(html: string): string {
     .replace(/[ \t]{2,}/g, " ")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
-}
-
-export function marketingEmailConfig(): {
-  from: string;
-  replyTo: string;
-} {
-  return {
-    from:
-      process.env.EMAIL_MARKETING_FROM?.trim() ||
-      process.env.EMAIL_FROM?.trim() ||
-      DEFAULT_MARKETING_FROM,
-    replyTo:
-      process.env.EMAIL_MARKETING_REPLY_TO?.trim() ||
-      process.env.EMAIL_REPLY_TO?.trim() ||
-      DEFAULT_MARKETING_REPLY_TO,
-  };
 }

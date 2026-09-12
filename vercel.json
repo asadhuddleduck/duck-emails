@@ -1,5 +1,12 @@
 {
   "crons": [
-    { "path": "/api/cron/send-drip", "schedule": "0 9 * * *" }
+    {
+      "path": "/api/cron/send-drip",
+      "schedule": "0 9 * * *"
+    },
+    {
+      "path": "/api/cron/email-reconcile",
+      "schedule": "*/5 * * * *"
+    }
   ]
 }

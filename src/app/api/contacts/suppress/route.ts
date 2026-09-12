@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import { mirrorPendingUnsubscribes, suppressDrip } from "@/lib/email-suppression";
+import { authenticateEmailCallback } from "@/lib/hatchflow-email";
 
 export async function POST(req: Request) {
-  const auth = req.headers.get("authorization");
-  if (auth !== `Bearer ${process.env.API_SECRET}`) {
+  if (!authenticateEmailCallback(req, process.env.API_SECRET)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -15,10 +16,8 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "email is required" }, { status: 400 });
   }
 
-  await db.execute({
-    sql: "INSERT OR REPLACE INTO drip_unsubscribes (email, reason) VALUES (?, ?)",
-    args: [email, reason],
-  });
+  await suppressDrip(db, email, reason);
+  await mirrorPendingUnsubscribes(db);
 
   console.log(`[contacts] Suppressed ${email} (reason: ${reason})`);
 
