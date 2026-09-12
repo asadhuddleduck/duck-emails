@@ -69,8 +69,10 @@ test("unsubscribe survives a mirror outage; purchased is not a global marketing 
     await suppressDrip(database, email, "purchased");
     assert.equal((await database.execute("SELECT reason FROM drip_unsubscribes")).rows[0].reason, "unsubscribed");
     const options = { endpoint: "https://hatchflow.example.test/api/notify/email", secret: "test-key" };
+    assert.equal(await mirrorPendingUnsubscribes(database, { ...options, fetcher: async () => Response.json({ ok: false }) }), 0);
     assert.equal(await mirrorPendingUnsubscribes(database, { ...options, fetcher: async () => { throw new Error("offline"); } }), 0);
     assert.equal((await dripEligibility(database, job())).eligible, false);
+    assert.equal(await mirrorPendingUnsubscribes(database, { ...options, fetcher: async () => Response.json({ ok: false }) }), 0);
     assert.equal(await mirrorPendingUnsubscribes(database, { ...options, fetcher: async (url, init) => {
       assert.equal(new URL(url).pathname, "/api/notify/email/suppressions");
       assert.equal(JSON.parse(init.body).brand, "huddleduck");

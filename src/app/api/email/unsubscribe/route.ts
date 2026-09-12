@@ -20,6 +20,6 @@ export async function POST(request: Request) {
   const email = verified(request);
   if (!email) return new Response("This unsubscribe link is invalid.", { status: 400 });
   await suppressDrip(db, email, "unsubscribed");
-  await mirrorPendingUnsubscribes(db);
+  await mirrorPendingUnsubscribes(db, { email });
   return new Response("You are unsubscribed from Huddle Duck marketing emails.", { headers: { "cache-control": "no-store" } });
 }

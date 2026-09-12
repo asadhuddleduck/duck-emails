@@ -17,7 +17,7 @@ export async function POST(req: Request) {
   }
 
   await suppressDrip(db, email, reason);
-  await mirrorPendingUnsubscribes(db);
+  await mirrorPendingUnsubscribes(db, { email });
 
   console.log(`[contacts] Suppressed ${email} (reason: ${reason})`);
 
