@@ -1,3 +1,4 @@
+import {ANNOUNCEMENT_CATEGORY,announcementAcceptedStatements} from "./agency-announcement.ts";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import type { Client, InStatement } from "@libsql/client";
 import { createEmailSource, stableEmailJobId, type EmailReceipt, type EmailRequest } from "./hatchflow-email.ts";
@@ -7,6 +8,7 @@ export function dripJobId(email: string, emailNum: number): string {
 }
 
 export function dripAcceptedStatements(request: EmailRequest, receipt: EmailReceipt): InStatement[] {
+  if(request.category===ANNOUNCEMENT_CATEGORY)return announcementAcceptedStatements(request,receipt);
   const emailNum = Number(request.eligibility?.emailNum);
   if (request.category !== "huddleduck-drip" || !Number.isInteger(emailNum) || emailNum < 1 ||
     request.sourceJobId !== dripJobId(request.to, emailNum)) throw new Error("Acceptance did not match a saved drip step");

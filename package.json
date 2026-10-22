@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test:email": "node --experimental-strip-types --test tests/email-source.test.mjs tests/drip-delivery.test.mjs",
+    "test:email": "node --experimental-strip-types --test tests/email-source.test.mjs tests/drip-delivery.test.mjs tests/agency-announcement.test.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

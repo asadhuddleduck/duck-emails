@@ -46,3 +46,23 @@ The drip selection cron remains daily at 09:00 UTC. Eligibility enforces a 20-ho
 ## Validation
 
 `npm run test:email` exercises local SQLite databases and stubbed HTTP, including queued/uncertain outcomes, duplicate receipts, immutable content, transaction rollback, missing configuration and current source eligibility. `npm run typecheck` checks application integration. No test sends mail or writes production data.
+
+## One owner-directed Huddle Duck announcement, October 2026
+
+`campaigns/huddle-duck-two-places-20261022/` freezes the one-email copy and Friday
+30 October 18:00 London deadline. There are no campaign reminders. The existing
+ten-email drip is unchanged. Resend holds an unsent review draft only.
+
+`agency-announcement.ts` uses separate campaign/member tables and job identity.
+It records explicit campaign owner authority and unknown historical permission
+without writing fabricated opt-in grants. The existing local stops retain priority;
+only verified old customer/waitlist/purchase exclusions remain scoped to their
+original sequence. Unresolved audit fulfilment holds remain excluded.
+
+Source eligibility requires the saved immutable job, exact approved campaign
+version, active owner scope, open capacity and a recipient snapshot no older
+than 60 seconds. Stale checks throw and hold the central queue. Operator preflight
+refreshes provider opt-outs and active/pending source campaigns, intersects the
+approved list and stages receipts. Acceptance advances only this campaign's
+member, never old drip positions. Use the HatchFlow campaign runbook for the
+WhatsApp path, final provider checks and campaign-specific allowance.

@@ -1,3 +1,4 @@
+import {ANNOUNCEMENT_CATEGORY,announcementEligibility} from "@/lib/agency-announcement";
 import { db } from "@/lib/db";
 import { authenticateEmailCallback } from "@/lib/hatchflow-email";
 import { dripEligibility, dripSource } from "@/lib/drip-delivery";
@@ -10,5 +11,5 @@ export async function POST(request: Request) {
   if (!saved || saved.request.to !== body.to || saved.request.category !== body.category || saved.request.contentVersion !== body.contentVersion) {
     return Response.json({ eligible: false, reason: "saved_job_mismatch" });
   }
-  return Response.json(await dripEligibility(db, saved.request));
+  return Response.json(saved.request.category===ANNOUNCEMENT_CATEGORY ? await announcementEligibility(db,saved.request) : await dripEligibility(db, saved.request));
 }

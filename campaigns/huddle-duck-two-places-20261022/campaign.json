@@ -1,0 +1,22 @@
+{
+  "id": "huddle-duck-two-places-20261022",
+  "subject": "Around £40 a day. Our whole team behind your food brand.",
+  "preheader": "Two new Huddle Duck client places. Applications close Friday 30 October.",
+  "brand": "huddleduck",
+  "source": "duck-emails",
+  "from": "Asad from Huddle Duck <asad@huddleduck.co.uk>",
+  "replyTo": "asad@huddleduck.co.uk",
+  "deadline": "2026-10-30T18:00:00.000Z",
+  "timezone": "Europe/London",
+  "maximumEmailsPerRecipient": 1,
+  "reminders": false,
+  "minimumOpenLocations": 3,
+  "clientCapacity": 2,
+  "monthlyFeeGbpExVat": 1300,
+  "adSpendIncluded": false,
+  "whatsapp": "+447706428225",
+  "whatsappText": "interested in huddle duck",
+  "ownerInstructionRef": "codex:01a16246-8e0d-73c2-a065-fd918e7f6478:implement-single-email-plan",
+  "consentProvenance": "unknown_historical",
+  "activation": "draft"
+}
